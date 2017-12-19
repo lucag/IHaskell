@@ -1,3 +1,4 @@
+{-# language NoImplicitPrelude, DoAndIfThenElse, OverloadedStrings, ExtendedDefaultRules #-}
 {-# LANGUAGE CPP #-}
 
 -- | Description : Shell scripting wrapper using @Shelly@ for the @notebook@, and
@@ -28,7 +29,7 @@ import qualified System.FilePath as FP
 import           System.Directory
 import           System.Exit (exitFailure)
 import           Data.Aeson (toJSON)
-import           Data.Aeson.Encode (encodeToTextBuilder)
+import           Data.Aeson.Text (encodeToTextBuilder)
 import           Data.Text.Lazy.Builder (toLazyText)
 import           Control.Monad (mplus)
 
@@ -44,6 +45,7 @@ import           StringUtils (replace, split)
 data KernelSpecOptions =
        KernelSpecOptions
          { kernelSpecGhcLibdir :: String           -- ^ GHC libdir.
+         , kernelSpecRTSOptions :: [String]        -- ^ Runtime options to use.
          , kernelSpecDebug :: Bool                 -- ^ Spew debugging output?
          , kernelSpecConfFile :: IO (Maybe String) -- ^ Filename of profile JSON file.
          , kernelSpecInstallPrefix :: Maybe String
@@ -53,6 +55,8 @@ data KernelSpecOptions =
 defaultKernelSpecOptions :: KernelSpecOptions
 defaultKernelSpecOptions = KernelSpecOptions
   { kernelSpecGhcLibdir = GHC.Paths.libdir
+  , kernelSpecRTSOptions = ["-M3g", "-N2"]  -- Memory cap 3 GiB,
+                                            -- multithreading on two processors.
   , kernelSpecDebug = False
   , kernelSpecConfFile = defaultConfFile
   , kernelSpecInstallPrefix = Nothing
@@ -76,9 +80,9 @@ ipythonCommand = do
 
 locateIPython :: SH.Sh SH.FilePath
 locateIPython = do
-  mbinary <- SH.which "ipython"
+  mbinary <- SH.which "jupyter"
   case mbinary of
-    Nothing      -> SH.errorExit "The IPython binary could not be located"
+    Nothing      -> SH.errorExit "The Jupyter binary could not be located"
     Just ipython -> return ipython
 
 -- | Run the IPython command with any arguments. The kernel is set to IHaskell.
@@ -190,6 +194,9 @@ installKernelspec replace opts = void $ do
            Nothing   -> []
            Just file -> ["--conf", file])
         ++ ["--ghclib", kernelSpecGhcLibdir opts]
+        ++ (case kernelSpecRTSOptions opts of
+             [] -> []
+             rtsOpts -> "+RTS" : kernelSpecRTSOptions opts ++ ["-RTS"])
            ++ ["--stack" | kernelSpecUseStack opts]
 
   let kernelSpec = KernelSpec

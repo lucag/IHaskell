@@ -1,3 +1,4 @@
+{-# language NoImplicitPrelude, DoAndIfThenElse, OverloadedStrings, ExtendedDefaultRules #-}
 {-# LANGUAGE CPP, ScopedTypeVariables #-}
 
 -- | Description : Argument parsing and basic messaging loop, using Haskell
@@ -112,6 +113,8 @@ parseKernelArgs = foldl' addFlag defaultKernelSpecOptions
       kernelSpecOpts { kernelSpecDebug = True }
     addFlag kernelSpecOpts (GhcLibDir libdir) =
       kernelSpecOpts { kernelSpecGhcLibdir = libdir }
+    addFlag kernelSpecOpts (RTSFlags rts) =
+      kernelSpecOpts { kernelSpecRTSOptions = rts }
     addFlag kernelSpecOpts (KernelspecInstallPrefix prefix) =
       kernelSpecOpts { kernelSpecInstallPrefix = Just prefix }
     addFlag kernelSpecOpts KernelspecUseStack =
@@ -128,7 +131,8 @@ runKernel kernelOpts profileSrc = do
       useStack = kernelSpecUseStack kernelOpts
 
   -- Parse the profile file.
-  Just profile <- liftM decode $ LBS.readFile profileSrc
+  let profileErr = error $ "ihaskell: "++profileSrc++": Failed to parse profile file"
+  profile <- liftM (fromMaybe profileErr . decode) $ LBS.readFile profileSrc
 
   -- Necessary for `getLine` and their ilk to work.
   dir <- getIHaskellDir
@@ -303,7 +307,7 @@ replyTo interface req@ExecuteRequest { getCode = code } replyHeader state = do
 
   let execCount = getExecutionCounter state
   -- Let all frontends know the execution count and code that's about to run
-  inputHeader <- liftIO $ dupHeader replyHeader InputMessage
+  inputHeader <- liftIO $ dupHeader replyHeader ExecuteInputMessage
   send $ PublishInput inputHeader (T.unpack code) execCount
 
   -- Run code and publish to the frontend as we go.

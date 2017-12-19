@@ -1,87 +1,223 @@
-# Test against different stack LTS versions.
-env:
- - DISPLAY=true   RESOLVER=lts-6.2  # Most recent GHC 7.10 LTS
- - DISPLAY=false  RESOLVER=lts-2.22 # Last GHC 7.8 LTS
+matrix:
+  allow_failures:
+    - language: nix
+  fast_finish: true
+  include:
+    - env: DISPLAY=true   USE_STACK_YAML="stack.yaml"     # GHC 8.0.2
+      language: python
+      # Test against different stack LTS versions.
 
-# Choose a lightweight base image; we provide our own build tools.
-language: python
+      # Choose a lightweight base image; we provide our own build tools.
+      python: "3.6"
 
-# Enable caching.
-sudo: false
+      # Enable caching.
+      sudo: false
 
-# Caching so the next build will be fast too.
-# These caches are the same between resolvers, but this is fine, 
-# as Stack differentiates between its resolvers.
-cache:
-  directories:
-  - $HOME/.ghc
-  - $HOME/.cabal
-  - $HOME/.stack
-  - $HOME/zeromq
+      # Caching so the next build will be fast too.
+      # These caches are the same between resolvers, but this is fine, 
+      # as Stack differentiates between its resolvers.
+      cache:
+        directories:
+        - $HOME/.ghc
+        - $HOME/.cabal
+        - $HOME/.stack
 
-# Enable packages we need.
-# Not all packages are available – see before_install for from-source builds. 
-addons:
-  apt:
-    packages:
-      - libmagic-dev     # magic
-      - libgmp-dev       # ghc
-      - libblas-dev      # hmatrix
-      - liblapack-dev    # hmatrix
+      # Enable packages we need.
+      # Not all packages are available – see before_install for from-source builds. 
+      addons:
+        apt:
+          packages:
+            - libmagic-dev     # magic
+            - libgmp-dev       # ghc
+            - libblas-dev      # hmatrix
+            - liblapack-dev    # hmatrix
+            - libcairo2-dev    # cairo
+            - libpango1.0-dev  # pango
+            - libzmq3-dev      # zmq
 
-before_install:
-    # Download and unpack the stack executable
-  - export PATH=$HOME/.local/bin:$PATH
-  - mkdir -p ~/.local/bin
-  - curl -L https://www.stackage.org/stack/linux-x86_64 | tar xz --wildcards --strip-components=1 -C ~/.local/bin '*/stack'
+      before_install:
+          # Download and unpack the stack executable
+        - export PATH=$HOME/.local/bin:$PATH
+        - mkdir -p ~/.local/bin
+        - curl -L https://www.stackage.org/stack/linux-x86_64 | tar xz --wildcards --strip-components=1 -C ~/.local/bin '*/stack'
 
-    # Install zeromq3 -- the package is not supported yet on Travis whitelist... (06/06/2016)
-  - |
-    if [ ! -d "$HOME/zeromq/lib" ]; then
-        export OLDPWD=$(pwd) 
-        travis_retry git clone http://www.github.com/zeromq/zeromq4-x.git libzmq
-        mkdir $HOME/zeromq
-        cd libzmq
-        travis_retry ./autogen.sh
-        travis_retry ./configure --prefix=$HOME/zeromq
-        make
-        travis_retry make install
-        cd $OLDPWD
-    fi
+          # Upgrades to avoid later build problems
+        - pip install -U pip
+        - pip install -U setuptools
 
-    # Install nbconvert for testing the notebook
-  - pip install jupyter notebook nbconvert
+          # Install nbconvert for testing the notebook
+        - pip install jupyter notebook nbconvert
 
-# This step takes the longest, and is what generates the Stack cache. 
-install:
-  # Set path for pkg-config to find zeromq, otherwise install of zeromq4-haskell fails.
-  - export PKG_CONFIG_PATH=$HOME/zeromq/lib/pkgconfig/
-  - stack setup --resolver=$RESOLVER
-  - stack build --dependencies-only --resolver=$RESOLVER
+      # This step takes the longest, and is what generates the Stack cache. 
+      install:
+        - |
+          # Used to avoid 'source and destination file are the same' error
+          mv $USE_STACK_YAML intermediate-stack.yaml
+          mv intermediate-stack.yaml stack.yaml
 
-script:
-  - export LD_LIBRARY_PATH=$HOME/zeromq/lib
-  - stack test --resolver=$RESOLVER
-  - |
-    set -e
-    if $DISPLAY; then
-        TOP=$(pwd)
-        for PACKAGE in ihaskell-display/*; do
-            cd "$TOP/$PACKAGE";
-            stack build --resolver=$RESOLVER;
-            cd "$TOP";
-        done
+          echo "apply-ghc-options: everything" >> stack.yaml
 
-        # Ensure that ipython-kernel examples build successfully.
-        stack build ipython-kernel --flag ipython-kernel:examples
+        - stack setup
+        - stack install gtk2hs-buildtools --fast
+        - stack build hmatrix --fast
+        - stack build --dependencies-only --fast
 
-        # Ensure that IHaskell notebook remains unchanged.
-        # Run the notebook to regenerate the outputs, then compare the new notebook to the old one.
-        stack install --stack-yaml=stack-full.yaml
-        stack exec -- ihaskell install --stack
-        stack exec -- jupyter nbconvert --to=notebook --execute --stdout notebooks/IHaskell.ipynb > ~/ihaskell-out.ipynb
+      script:
+        - stack test --no-terminal --fast
+        - |
+          set -e
+          if $DISPLAY; then
+              TOP=$(pwd)
+              stack build --no-terminal --fast
 
-        # Images are rendered differently on different systems, so filter them out in the comparison
-        diff <(grep -v image/png ~/ihaskell-out.ipynb) <(grep -v image/png notebooks/IHaskell.ipynb)
-    fi
-    
+              # Ensure that ipython-kernel examples build successfully.
+              stack build ipython-kernel --flag ipython-kernel:examples --fast
+
+              # Ensure that IHaskell notebook remains unchanged.
+              # Run the notebook to regenerate the outputs, then compare the new notebook to the old one.
+              stack install --fast
+              stack exec -- ihaskell install --stack
+              stack exec -- jupyter nbconvert --to=notebook --execute --stdout notebooks/IHaskell.ipynb > ~/ihaskell-out.ipynb
+
+              # Images are rendered differently on different systems, so filter them out in the comparison
+              diff <(grep -v image/png ~/ihaskell-out.ipynb) <(grep -v image/png notebooks/IHaskell.ipynb)
+          fi
+    - env: DISPLAY=true   USE_STACK_YAML="stack-8.2.yaml"     # GHC 8.2.1
+      language: python
+      # Test against different stack LTS versions.
+
+      # Choose a lightweight base image; we provide our own build tools.
+      python: "3.6"
+
+      # Enable caching.
+      sudo: false
+
+      # Caching so the next build will be fast too.
+      # These caches are the same between resolvers, but this is fine, 
+      # as Stack differentiates between its resolvers.
+      cache:
+        directories:
+        - $HOME/.ghc
+        - $HOME/.cabal
+        - $HOME/.stack
+
+      # Enable packages we need.
+      # Not all packages are available – see before_install for from-source builds. 
+      addons:
+        apt:
+          packages:
+            - libmagic-dev     # magic
+            - libgmp-dev       # ghc
+            - libblas-dev      # hmatrix
+            - liblapack-dev    # hmatrix
+            - libcairo2-dev    # cairo
+            - libpango1.0-dev  # pango
+            - libzmq3-dev      # zmq
+
+      before_install:
+          # Download and unpack the stack executable
+        - export PATH=$HOME/.local/bin:$PATH
+        - mkdir -p ~/.local/bin
+        - curl -L https://www.stackage.org/stack/linux-x86_64 | tar xz --wildcards --strip-components=1 -C ~/.local/bin '*/stack'
+
+          # Upgrades to avoid later build problems
+        - pip install -U pip
+        - pip install -U setuptools
+
+          # Install nbconvert for testing the notebook
+        - pip install jupyter notebook nbconvert
+
+      # This step takes the longest, and is what generates the Stack cache. 
+      install:
+        - |
+          # Used to avoid 'source and destination file are the same' error
+          mv $USE_STACK_YAML intermediate-stack.yaml
+          mv intermediate-stack.yaml stack.yaml
+
+          echo "apply-ghc-options: everything" >> stack.yaml
+
+        - stack setup
+        - stack install gtk2hs-buildtools --fast
+        - stack build hmatrix --fast
+        - stack build --dependencies-only --fast
+
+      script:
+        - stack test --no-terminal --fast
+        - |
+          set -e
+          if $DISPLAY; then
+              TOP=$(pwd)
+              stack build --no-terminal --fast
+
+              # Ensure that ipython-kernel examples build successfully.
+              stack build ipython-kernel --flag ipython-kernel:examples --fast
+
+              # Ensure that IHaskell notebook remains unchanged.
+              # Run the notebook to regenerate the outputs, then compare the new notebook to the old one.
+              stack install --fast
+              stack exec -- ihaskell install --stack
+              stack exec -- jupyter nbconvert --to=notebook --execute --stdout notebooks/IHaskell.ipynb > ~/ihaskell-out.ipynb
+
+              # Images are rendered differently on different systems, so filter them out in the comparison
+              diff <(grep -v image/png ~/ihaskell-out.ipynb) <(grep -v image/png notebooks/IHaskell.ipynb)
+          fi
+    - language: nix
+      env: RELEASE_NIX="release.nix"
+      cache:
+        directories:
+        - /nix/store
+        timeout: 1000
+      install:
+        - export NIX_CONF_DIR=~
+        - echo "binary-caches = http://128.199.234.106:3000" >> $NIX_CONF_DIR/nix.conf
+        - echo "binary-cache-public-keys = 128.199.234.106:jzUyrIQHov5i6f94jQVriqPDLuPYlZPAsga3W3k+L8E=" >> $NIX_CONF_DIR/nix.conf
+        - nix-env -i curl jq
+      script:
+        - >
+          nix-build
+          -I nixpkgs=https://github.com/NixOS/nixpkgs-channels/archive/$(curl "https://api.github.com/repos/NixOS/nixpkgs-channels/branches/nixos-17.09" | jq -r '.commit.sha').tar.gz
+          $RELEASE_NIX
+          --arg packages '(p: with p; [
+            ihaskell-aeson
+            ihaskell-blaze
+            ihaskell-charts
+            ihaskell-diagrams
+            ihaskell-gnuplot
+            ihaskell-hatex
+            ihaskell-juicypixels
+            ihaskell-magic
+            ihaskell-plot
+            ihaskell-static-canvas
+          ])'
+        - result/bin/ihaskell-nbconvert --to=notebook --execute --stdout notebooks/IHaskell.ipynb > ~/ihaskell-out.ipynb
+        - diff <(grep -v image/png ~/ihaskell-out.ipynb) <(grep -v image/png notebooks/IHaskell.ipynb)
+    - language: nix
+      env: RELEASE_NIX="release-8.2.nix"
+      cache:
+        directories:
+        - /nix/store
+        timeout: 1000
+      install:
+        - export NIX_CONF_DIR=~
+        - echo "binary-caches = http://128.199.234.106:3000" >> $NIX_CONF_DIR/nix.conf
+        - echo "binary-cache-public-keys = 128.199.234.106:jzUyrIQHov5i6f94jQVriqPDLuPYlZPAsga3W3k+L8E=" >> $NIX_CONF_DIR/nix.conf
+        - nix-env -i curl jq
+      script:
+        - >
+          nix-build
+          -I nixpkgs=https://github.com/NixOS/nixpkgs-channels/archive/$(curl "https://api.github.com/repos/NixOS/nixpkgs-channels/branches/nixos-17.09" | jq -r '.commit.sha').tar.gz
+          $RELEASE_NIX
+          --arg packages '(p: with p; [
+            ihaskell-aeson
+            ihaskell-blaze
+            ihaskell-charts
+            ihaskell-diagrams
+            ihaskell-gnuplot
+            ihaskell-hatex
+            ihaskell-juicypixels
+            ihaskell-magic
+            ihaskell-plot
+            ihaskell-static-canvas
+          ])'
+        - result/bin/ihaskell-nbconvert --to=notebook --execute --stdout notebooks/IHaskell.ipynb > ~/ihaskell-out.ipynb
+        - diff <(grep -v image/png ~/ihaskell-out.ipynb) <(grep -v image/png notebooks/IHaskell.ipynb)

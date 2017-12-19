@@ -1,5 +1,9 @@
 flags: {}
 packages:
 - '.'
+<<<<<<< HEAD
 #resolver: lts-6.2
 resolver: lts-6.33
+=======
+resolver: lts-9.20
+>>>>>>> 9aa375f6c3a70369341ca85f24c71aa40b8a19ea

@@ -1,7 +1,43 @@
 flags: {}
 packages:
+<<<<<<< HEAD
 - '.'
 - ./ipython-kernel
 - ./ghc-parser
 extra-deps: []
 resolver: lts-6.27
+=======
+    - .
+    - ./ipython-kernel
+    - ./ghc-parser
+    - ./ihaskell-display/ihaskell-aeson
+    - ./ihaskell-display/ihaskell-blaze
+    - ./ihaskell-display/ihaskell-charts
+    - ./ihaskell-display/ihaskell-diagrams
+    - ./ihaskell-display/ihaskell-gnuplot
+    - ./ihaskell-display/ihaskell-hatex
+    - ./ihaskell-display/ihaskell-juicypixels
+    - ./ihaskell-display/ihaskell-magic
+    - ./ihaskell-display/ihaskell-plot
+    - ./ihaskell-display/ihaskell-static-canvas
+    - ./ihaskell-display/ihaskell-widgets
+resolver: lts-9.20
+extra-deps: []
+flags:
+  ihaskell:
+    binpkgdb: false
+
+nix:
+  enable: false
+  packages:
+    - blas
+    - cairo
+    - file
+    - gcc
+    - liblapack
+    - ncurses
+    - pango
+    - pkgconfig
+    - zeromq
+    - zlib
+>>>>>>> 9aa375f6c3a70369341ca85f24c71aa40b8a19ea

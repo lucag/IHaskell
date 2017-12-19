@@ -59,6 +59,12 @@ import           Data.List (nubBy)
 
 import           StringUtils (replace)
 
+#if MIN_VERSION_ghc(8,0,1)
+import           GHC.LanguageExtensions
+
+type ExtensionFlag = Extension
+#endif
+
 -- | A extension flag that can be set or unset.
 data ExtFlag = SetFlag ExtensionFlag
              | UnsetFlag ExtensionFlag
@@ -97,9 +103,15 @@ pprDynFlags show_all dflags =
     , O.text "other dynamic, non-language, flag settings:" O.$$
       O.nest 2 (O.vcat (map (setting opt) others))
     , O.text "warning settings:" O.$$
-      O.nest 2 (O.vcat (map (setting wopt) DynFlags.fWarningFlags))
+      O.nest 2 (O.vcat (map (setting wopt) warningFlags))
     ]
   where
+
+#if MIN_VERSION_ghc(8,0,0)
+    warningFlags = DynFlags.wWarningFlags
+#else
+    warningFlags = DynFlags.fWarningFlags
+#endif
 
 #if MIN_VERSION_ghc(7,8,0)
     opt = gopt
@@ -212,7 +224,11 @@ doc :: GhcMonad m => O.SDoc -> m String
 doc sdoc = do
   flags <- getSessionDynFlags
   unqual <- getPrintUnqual
+#if MIN_VERSION_ghc(8,2,0)
+  let style = O.mkUserStyle flags unqual O.AllTheWay
+#else
   let style = O.mkUserStyle unqual O.AllTheWay
+#endif
   let cols = pprCols flags
       d = O.runSDoc sdoc (O.initSDocContext flags style)
   return $ Pretty.fullRender Pretty.PageMode cols 1.5 string_txt "" d
@@ -239,7 +255,26 @@ initGhci sandboxPackages = do
   originalFlags <- getSessionDynFlags
   let flag = flip xopt_set
       unflag = flip xopt_unset
+#if MIN_VERSION_ghc(8,0,0)
+      dflags = flag ExtendedDefaultRules . unflag MonomorphismRestriction $ originalFlags
+#else
       dflags = flag Opt_ExtendedDefaultRules . unflag Opt_MonomorphismRestriction $ originalFlags
+#endif
+#if MIN_VERSION_ghc(8,2,0)
+      pkgFlags =
+        case sandboxPackages of
+          Nothing -> packageDBFlags originalFlags
+          Just path ->
+            let pkg = PackageDB $ PkgConfFile path
+            in packageDBFlags originalFlags ++ [pkg]
+
+  void $ setSessionDynFlags $ dflags
+    { hscTarget = HscInterpreted
+    , ghcLink = LinkInMemory
+    , pprCols = 300
+    , packageDBFlags = pkgFlags
+    }
+#else
       pkgConfs =
         case sandboxPackages of
           Nothing -> extraPkgConfs originalFlags
@@ -253,6 +288,7 @@ initGhci sandboxPackages = do
     , pprCols = 300
     , extraPkgConfs = pkgConfs
     }
+#endif
 
 -- | Evaluate a single import statement. If this import statement is importing a module which was
 -- previously imported implicitly (such as `Prelude`) or if this module has a `hiding` annotation,
@@ -323,8 +359,13 @@ cleanUpDuplicateInstances = modifySession $ \hscEnv ->
   in hscEnv { hsc_IC = ic { ic_instances = (clsInsts', famInsts) } }
   where
     instEq :: ClsInst -> ClsInst -> Bool
-#if MIN_VERSION_ghc(7,8,0)
+#if MIN_VERSION_ghc(8,0,0)
     -- Only support replacing instances on GHC 7.8 and up
+    instEq c1 c2
+      | ClsInst { is_tvs = tpl_tvs, is_tys = tpl_tys, is_cls = cls } <- c1,
+        ClsInst { is_tys = tpl_tys', is_cls = cls' } <- c2
+      = cls == cls' && isJust (tcMatchTys tpl_tys tpl_tys')
+#elif MIN_VERSION_ghc(7,8,0)
     instEq c1 c2
       | ClsInst { is_tvs = tpl_tvs, is_tys = tpl_tys, is_cls = cls } <- c1,
         ClsInst { is_tys = tpl_tys', is_cls = cls' } <- c2
@@ -333,10 +374,16 @@ cleanUpDuplicateInstances = modifySession $ \hscEnv ->
 #else
     instEq _ _ = False
 #endif
+
+
 -- | Get the type of an expression and convert it to a string.
 getType :: GhcMonad m => String -> m String
 getType expr = do
+#if MIN_VERSION_ghc(8,2,0)
+  result <- exprType TM_Inst expr
+#else
   result <- exprType expr
+#endif
   flags <- getSessionDynFlags
   let typeStr = O.showSDocUnqual flags $ O.ppr result
   return typeStr

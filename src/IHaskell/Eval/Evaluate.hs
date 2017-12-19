@@ -26,6 +26,7 @@ import qualified Data.ByteString.Lazy as LBS
 import qualified Data.ByteString.Char8 as CBS
 
 import           Control.Concurrent (forkIO, threadDelay)
+import           Data.Foldable (foldMap)
 import           Prelude (putChar, head, tail, last, init, (!!))
 import           Data.List (findIndex, and, foldl1, nubBy)
 import           Text.Printf
@@ -77,7 +78,7 @@ import           Module hiding (Module)
 import qualified Pretty
 import           FastString
 import           Bag
-import           ErrUtils (errMsgShortDoc, errMsgExtraInfo)
+import qualified ErrUtils
 
 import           IHaskell.Types
 import           IHaskell.IPython
@@ -178,19 +179,41 @@ interpret libdir allowedStdin action = runGhc (Just libdir) $ do
   dir <- liftIO getIHaskellDir
   let cmd = printf "IHaskell.IPython.Stdin.fixStdin \"%s\"" dir
   when (allowedStdin && hasSupportLibraries) $ void $
-    runStmt cmd RunToCompletion
+    execStmt cmd execOptions
 
   initializeItVariable
 
   -- Run the rest of the interpreter
   action hasSupportLibraries
-#if MIN_VERSION_ghc(7,10,2)
-packageIdString' dflags pkg_key = fromMaybe "(unknown)" (packageKeyPackageIdString dflags pkg_key)
+
+packageIdString' :: DynFlags -> PackageConfig -> String
+packageIdString' dflags pkg_cfg =
+#if MIN_VERSION_ghc(8,2,0)
+    case (lookupPackage dflags $ packageConfigId pkg_cfg) of
+      Nothing -> "(unknown)"
+      Just cfg -> let
+        PackageName name = packageName cfg
+        in unpackFS name
+#elif MIN_VERSION_ghc(8,0,0)
+    fromMaybe "(unknown)" (unitIdPackageIdString dflags $ packageConfigId pkg_cfg)
+#elif MIN_VERSION_ghc(7,10,2)
+    fromMaybe "(unknown)" (packageKeyPackageIdString dflags $ packageConfigId pkg_cfg)
 #elif MIN_VERSION_ghc(7,10,0)
-packageIdString' dflags = packageKeyPackageIdString dflags
+    packageKeyPackageIdString dflags . packageConfigId
 #else
-packageIdString' dflags = packageIdString
+    packageIdString . packageConfigId
 #endif
+
+getPackageConfigs :: DynFlags -> [PackageConfig]
+getPackageConfigs dflags =
+#if MIN_VERSION_ghc(8,0,0)
+    foldMap snd pkgDb
+#else
+    pkgDb
+#endif
+  where
+    Just pkgDb = pkgDatabase dflags
+
 -- | Initialize our GHC session with imports and a value for 'it'. Return whether the IHaskell
 -- support libraries are available.
 initializeImports :: Interpreter Bool
@@ -200,25 +223,34 @@ initializeImports = do
   dflags <- getSessionDynFlags
   broken <- liftIO getBrokenPackages
   (dflags, _) <- liftIO $ initPackages dflags
-  let Just db = pkgDatabase dflags
-      packageNames = map (packageIdString' dflags . packageConfigId) db
+  let db = getPackageConfigs dflags
+      packageNames = map (packageIdString' dflags) db
 
       initStr = "ihaskell-"
 
+#if MIN_VERSION_ghc(8,2,0)
+      -- Name of the ihaskell package, i.e. "ihaskell"
+      iHaskellPkgName = "ihaskell"
+#else
       -- Name of the ihaskell package, e.g. "ihaskell-1.2.3.4"
       iHaskellPkgName = initStr ++ intercalate "." (map show (versionBranch version))
+#endif
+
+#if !MIN_VERSION_ghc(8,0,0)
+      unitId = packageId
+#endif
 
       dependsOnRight pkg = not $ null $ do
         pkg <- db
         depId <- depends pkg
-        dep <- filter ((== depId) . installedPackageId) db
-        let idString = packageIdString' dflags (packageConfigId dep)
+        dep <- filter ((== depId) . unitId) db
+        let idString = packageIdString' dflags dep
         guard (iHaskellPkgName `isPrefixOf` idString)
 
       displayPkgs = [ pkgName
-                    | pkgName <- packageNames 
-                    , Just (x:_) <- [stripPrefix initStr pkgName] 
-                    , pkgName `notElem` broken 
+                    | pkgName <- packageNames
+                    , Just (x:_) <- [stripPrefix initStr pkgName]
+                    , pkgName `notElem` broken
                     , isAlpha x ]
 
       hasIHaskellPackage = not $ null $ filter (== iHaskellPkgName) packageNames
@@ -233,7 +265,11 @@ initializeImports = do
       dropFirstAndLast = reverse . drop 1 . reverse . drop 1
 
       toImportStmt :: String -> String
+#if MIN_VERSION_ghc(8,2,0)
+      toImportStmt = printf importFmt . concatMap capitalize . drop 1 . split "-"
+#else
       toImportStmt = printf importFmt . concatMap capitalize . dropFirstAndLast . split "-"
+#endif
 
       displayImports = map toImportStmt displayPkgs
 
@@ -258,7 +294,7 @@ initializeItVariable :: Interpreter ()
 initializeItVariable =
   -- This is required due to the way we handle `it` in the wrapper statements - if it doesn't exist,
   -- the first statement will fail.
-  void $ runStmt "let it = ()" RunToCompletion
+  void $ execStmt "let it = ()" execOptions
 
 -- | Publisher for IHaskell outputs. The first argument indicates whether this output is final
 -- (true) or intermediate (false).
@@ -282,7 +318,7 @@ cleanString x = if allBrackets
     str = strip x
     l = lines str
     allBrackets = all (fAny [isPrefixOf ">", null]) l
-    fAny fs x = any ($x) fs
+    fAny fs x = any ($ x) fs
     clean = unlines $ map removeBracket l
     removeBracket ('>':xs) = xs
     removeBracket [] = []
@@ -411,6 +447,14 @@ flushWidgetMessages state evalMsgs widgetHandler = do
         let commMessages = evalMsgs ++ messages
         widgetHandler state commMessages
 
+
+getErrMsgDoc :: ErrUtils.ErrMsg -> SDoc
+#if MIN_VERSION_ghc(8,0,0)
+getErrMsgDoc = ErrUtils.pprLocErrMsg
+#else
+getErrMsgDoc msg = ErrUtils.errMsgShortString msg $$ ErrUtils.errMsgContext msg
+#endif
+
 safely :: KernelState -> Interpreter EvalOut -> Interpreter EvalOut
 safely state = ghandle handler . ghandle sourceErrorHandler
   where
@@ -428,10 +472,7 @@ safely state = ghandle handler . ghandle sourceErrorHandler
     sourceErrorHandler :: SourceError -> Interpreter EvalOut
     sourceErrorHandler srcerr = do
       let msgs = bagToList $ srcErrorMessages srcerr
-      errStrs <- forM msgs $ \msg -> do
-                   shortStr <- doc $ errMsgShortDoc msg
-                   contextStr <- doc $ errMsgExtraInfo msg
-                   return $ unlines [shortStr, contextStr]
+      errStrs <- forM msgs $ doc . getErrMsgDoc
 
       let fullErr = unlines errStrs
 
@@ -463,12 +504,7 @@ evalCommand :: Publisher -> CodeBlock -> KernelState -> Interpreter EvalOut
 evalCommand _ (Import importStr) state = wrapExecution state $ do
   write state $ "Import: " ++ importStr
   evalImport importStr
-
-  -- Warn about `it` variable.
-  return $ if "Test.Hspec" `isInfixOf` importStr
-             then displayError $ "Warning: Hspec is unusable in IHaskell until the resolution of GHC bug #8639." ++
-                                 "\nThe variable `it` is shadowed and cannot be accessed, even in qualified form."
-             else mempty
+  return mempty
 
 evalCommand _ (Module contents) state = wrapExecution state $ do
   write state $ "Module:\n" ++ contents
@@ -489,7 +525,7 @@ evalCommand _ (Module contents) state = wrapExecution state $ do
   -- Remember which modules we've loaded before.
   importedModules <- getContext
 
-  let 
+  let
       -- Get the dot-delimited pieces of the module name.
       moduleNameOf :: InteractiveImport -> [String]
       moduleNameOf (IIDecl decl) = split "." . moduleNameString . unLoc . ideclName $ decl
@@ -668,7 +704,7 @@ evalCommand publish (Directive ShellCmd ('!':cmd)) state = wrapExecution state $
           let cmd = printf "IHaskellDirectory.setCurrentDirectory \"%s\"" $
                 replace " " "\\ " $
                   replace "\"" "\\\"" directory
-          runStmt cmd RunToCompletion
+          execStmt cmd execOptions
           return mempty
         else return $ displayError $ printf "No such directory: '%s'" directory
     cmd -> liftIO $ do
@@ -685,7 +721,7 @@ evalCommand publish (Directive ShellCmd ('!':cmd)) state = wrapExecution state $
       outputAccum <- liftIO $ newMVar ""
 
       -- Start a loop to publish intermediate results.
-      let 
+      let
           -- Compute how long to wait between reading pieces of the output. `threadDelay` takes an
           -- argument of microseconds.
           ms = 1000
@@ -730,7 +766,7 @@ evalCommand publish (Directive ShellCmd ('!':cmd)) state = wrapExecution state $
                                ]
 
       loop
-      where 
+      where
 #if MIN_VERSION_base(4,8,0)
         createPipe' = createPipe
 #else
@@ -820,23 +856,35 @@ evalCommand output (Expression expr) state = do
   -- is no appropriate typeclass instance, this will throw an exception and thus `attempt` will return
   -- False, and we just resort to plaintext.
   let displayExpr = printf "(IHaskell.Display.display (%s))" expr :: String
+#if MIN_VERSION_ghc(8,2,0)
+  canRunDisplay <- attempt $ exprType TM_Inst displayExpr
+#else
   canRunDisplay <- attempt $ exprType displayExpr
+#endif
 
   -- Check if this is a widget.
   let widgetExpr = printf "(IHaskell.Display.Widget (%s))" expr :: String
+#if MIN_VERSION_ghc(8,2,0)
+  isWidget <- attempt $ exprType TM_Inst widgetExpr
+#else
   isWidget <- attempt $ exprType widgetExpr
+#endif
 
-  -- Check if this is a template haskell declaration 
+  -- Check if this is a template haskell declaration
   let declExpr = printf "((id :: IHaskellTH.DecsQ -> IHaskellTH.DecsQ) (%s))" expr :: String
   let anyExpr = printf "((id :: IHaskellPrelude.Int -> IHaskellPrelude.Int) (%s))" expr :: String
+#if MIN_VERSION_ghc(8,2,0)
+  isTHDeclaration <- liftM2 (&&) (attempt $ exprType TM_Inst declExpr) (not <$> attempt (exprType TM_Inst anyExpr))
+#else
   isTHDeclaration <- liftM2 (&&) (attempt $ exprType declExpr) (not <$> attempt (exprType anyExpr))
+#endif
 
   write state $ "Can Display: " ++ show canRunDisplay
   write state $ "Is Widget: " ++ show isWidget
   write state $ "Is Declaration: " ++ show isTHDeclaration
 
   if isTHDeclaration
-    then 
+    then
     -- If it typechecks as a DecsQ, we do not want to display the DecsQ, we just want the
     -- declaration made.
     do
@@ -851,7 +899,7 @@ evalCommand output (Expression expr) state = do
           , evalMsgs = []
           }
     else if canRunDisplay
-           then 
+           then
            -- Use the display. As a result, `it` is set to the output.
            useDisplay displayExpr
            else do
@@ -925,7 +973,11 @@ evalCommand output (Expression expr) state = do
                       then display :: Display
                       else removeSvg display
 
+#if MIN_VERSION_ghc(8,2,0)
+    isIO expr = attempt $ exprType TM_Inst $ printf "((\\x -> x) :: IO a -> IO a) (%s)" expr
+#else
     isIO expr = attempt $ exprType $ printf "((\\x -> x) :: IO a -> IO a) (%s)" expr
+#endif
 
     postprocessShowError :: EvalOut -> EvalOut
     postprocessShowError evalOut = evalOut { evalResult = Display $ map postprocess disps }
@@ -975,7 +1027,11 @@ evalCommand _ (Declaration decl) state = wrapExecution state $ do
       -- Get all the type strings.
       dflags <- getSessionDynFlags
       types <- forM nonDataNames $ \name -> do
+#if MIN_VERSION_ghc(8,2,0)
+                 theType <- showSDocUnqual dflags . ppr <$> exprType TM_Inst name
+#else
                  theType <- showSDocUnqual dflags . ppr <$> exprType name
+#endif
                  return $ name ++ " :: " ++ theType
 
       return $ Display [html $ unlines $ map formatGetType types]
@@ -1024,10 +1080,14 @@ doLoadModule name modName = do
     -- Compile loaded modules.
     flags <- getSessionDynFlags
     errRef <- liftIO $ newIORef []
-    setSessionDynFlags
+    setSessionDynFlags $ flip gopt_set Opt_BuildDynamicToo
       flags
         { hscTarget = objTarget flags
+#if MIN_VERSION_ghc(8,0,0)
+        , log_action = \dflags sev srcspan ppr _style msg -> modifyIORef' errRef (showSDoc flags msg :)
+#else
         , log_action = \dflags sev srcspan ppr msg -> modifyIORef' errRef (showSDoc flags msg :)
+#endif
         }
 
     -- Load the new target.
@@ -1089,7 +1149,7 @@ keepingItVariable act = do
   gen <- liftIO getStdGen
   let rand = take 20 $ randomRs ('0', '9') gen
       var name = name ++ rand
-      goStmt s = runStmt s RunToCompletion
+      goStmt s = execStmt s execOptions
       itVariable = var "it_var_temp_"
 
   goStmt $ printf "let %s = it" itVariable
@@ -1102,12 +1162,12 @@ data Captured a = CapturedStmt String
 
 capturedEval :: (String -> IO ()) -- ^ Function used to publish intermediate output.
              -> Captured a -- ^ Statement to evaluate.
-             -> Interpreter (String, RunResult) -- ^ Return the output and result.
+             -> Interpreter (String, ExecResult) -- ^ Return the output and result.
 capturedEval output stmt = do
   -- Generate random variable names to use so that we cannot accidentally override the variables by
   -- using the right names in the terminal.
   gen <- liftIO getStdGen
-  let 
+  let
       -- Variable names generation.
       rand = take 20 $ randomRs ('0', '9') gen
       var name = name ++ rand
@@ -1142,43 +1202,57 @@ capturedEval output stmt = do
         , voidpf "IHaskellIO.closeFd %s" writeVariable
         , printf "let it = %s" itVariable
         ]
-      pipeExpr = printf "let %s = %s" (var "pipe_var_") readVariable
 
-      goStmt :: String -> Ghc RunResult
-      goStmt s = runStmt s RunToCompletion
+      goStmt :: String -> Ghc ExecResult
+      goStmt s = execStmt s execOptions
 
       runWithResult (CapturedStmt str) = goStmt str
       runWithResult (CapturedIO io) = do
         status <- gcatch (liftIO io >> return NoException) (return . AnyException)
         return $
           case status of
-            NoException    -> RunOk []
-            AnyException e -> RunException e
+            NoException    -> ExecComplete (Right []) 0
+            AnyException e -> ExecComplete (Left e)   0
 
   -- Initialize evaluation context.
-  void $ forM initStmts goStmt
+  results <- forM initStmts goStmt
 
+#if __GLASGOW_HASKELL__ >= 800
+  -- This works fine on GHC 8.0 and newer
+  dyn <- dynCompileExpr readVariable
+  pipe <- case fromDynamic dyn of
+            Nothing -> fail "Evaluate: Bad pipe"
+            Just fd -> liftIO $ do
+                handle <- fdToHandle fd
+                hSetEncoding handle utf8
+                return handle
+#else
   -- Get the pipe to read printed output from. This is effectively the source code of dynCompileExpr
   -- from GHC API's InteractiveEval. However, instead of using a `Dynamic` as an intermediary, it just
   -- directly reads the value. This is incredibly unsafe! However, for some reason the `getContext`
   -- and `setContext` required by dynCompileExpr (to import and clear Data.Dynamic) cause issues with
   -- data declarations being updated (e.g. it drops newer versions of data declarations for older ones
   -- for unknown reasons). First, compile down to an HValue.
+  let pipeExpr = printf "let %s = %s" (var "pipe_var_") readVariable
   Just (_, hValues, _) <- withSession $ liftIO . flip hscStmt pipeExpr
   -- Then convert the HValue into an executable bit, and read the value.
   pipe <- liftIO $ do
-            fd <- head <$> unsafeCoerce hValues
+            fds <- unsafeCoerce hValues
+            fd <- case fds of
+              fd : _ -> return fd
+              []     -> fail "Failed to evaluate pipes"
+              _      -> fail $ "Expected one fd, saw "++show (length fds)
             handle <- fdToHandle fd
             hSetEncoding handle utf8
             return handle
-
+#endif
   -- Keep track of whether execution has completed.
   completed <- liftIO $ newMVar False
   finishedReading <- liftIO newEmptyMVar
   outputAccum <- liftIO $ newMVar ""
 
   -- Start a loop to publish intermediate results.
-  let 
+  let
       -- Compute how long to wait between reading pieces of the output. `threadDelay` takes an
       -- argument of microseconds.
       ms = 1000
@@ -1251,7 +1325,7 @@ evalStatementOrIO publish state cmd = do
 
   (printed, result) <- capturedEval output cmd
   case result of
-    RunOk names -> do
+    ExecComplete (Right names) _ -> do
       dflags <- getSessionDynFlags
 
       let allNames = map (showPpr dflags) names
@@ -1270,7 +1344,11 @@ evalStatementOrIO publish state cmd = do
         else do
           -- Get all the type strings.
           types <- forM nonItNames $ \name -> do
+#if MIN_VERSION_ghc(8,2,0)
+                     theType <- showSDocUnqual dflags . ppr <$> exprType TM_Inst name
+#else
                      theType <- showSDocUnqual dflags . ppr <$> exprType name
+#endif
                      return $ name ++ " :: " ++ theType
 
           let joined = unlines types
@@ -1283,8 +1361,8 @@ evalStatementOrIO publish state cmd = do
               -- Return plain and html versions. Previously there was only a plain version.
               text -> Display [plain $ joined ++ "\n" ++ text, html $ htmled ++ mono text]
 
-    RunException exception -> throw exception
-    RunBreak{} -> error "Should not break."
+    ExecComplete (Left exception) _ -> throw exception
+    ExecBreak{} -> error "Should not break."
 
 -- Read from a file handle until we hit a delimiter or until we've read as many characters as
 -- requested
@@ -1324,7 +1402,7 @@ formatErrorWithClass cls =
   typeCleaner
   where
     fixDollarSigns = replace "$" "<span>&dollar;</span>"
-    useDashV = "\nUse -v to see a list of the files searched for."
+    useDashV = "\n    Use -v to see a list of the files searched for."
     isShowError err =
       "No instance for (Show" `isPrefixOf` err &&
       isInfixOf " arising from a use of `print'" err
