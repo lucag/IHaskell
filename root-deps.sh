@@ -29,15 +29,15 @@ else
     # python-pip is out of date, causes problems, so we get the latest version
     # using easy_install instead.
     #sudo apt-get install python-pip
-    apt-get install -y python-dev
+    apt-get install -y python3 python3-dev
 
     # To get easy_install
-    apt-get install -y python-setuptools
+    apt-get install -y python3-setuptools
 
     easy_install -U pip
 
     # -H to use .cache in /root
-    pip install -U 'ipython[all]'
+    pip3 install -U 'ipython[all]'
 fi
 
 # C libraries

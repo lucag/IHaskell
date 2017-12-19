@@ -4,7 +4,7 @@
 # TODO Split out setup for installation from Hackage released versions.
 
 # Install the dependencies as root user
-sudo ./root-deps.sh
+source ./root-deps.sh
 
 # Make sure to have basic tools installed.
 cabal update

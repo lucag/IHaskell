@@ -15,7 +15,8 @@ packages:
     - ./ihaskell-display/ihaskell-rlangqq
     - ./ihaskell-display/ihaskell-static-canvas
     - ./ihaskell-display/ihaskell-widgets
-resolver: lts-6.2
+#resolver: lts-6.2
+resolver: lts-6.33
 extra-deps:
     - system-argv0-0.1.1 # Necessary for LTS 2.22 (GHC 7.8)
     - gnuplot-0.5.4
