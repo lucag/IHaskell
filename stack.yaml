@@ -21,11 +21,10 @@ resolver: lts-6.27
     - ./ihaskell-display/ihaskell-plot
     - ./ihaskell-display/ihaskell-static-canvas
     - ./ihaskell-display/ihaskell-widgets
-resolver: lts-9.20
-extra-deps: []
-flags:
-  ihaskell:
-    binpkgdb: false
+resolver: lts-10.6
+allow-newer: true
+extra-deps:
+- static-canvas-0.2.0.3
 
 nix:
   enable: false

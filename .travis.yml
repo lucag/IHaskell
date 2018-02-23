@@ -3,7 +3,7 @@ matrix:
     - language: nix
   fast_finish: true
   include:
-    - env: DISPLAY=true   USE_STACK_YAML="stack.yaml"     # GHC 8.0.2
+    - env: DISPLAY=true   USE_STACK_YAML="stack-8.0.yaml"     # GHC 8.0.2
       language: python
       # Test against different stack LTS versions.
 
@@ -45,8 +45,8 @@ matrix:
         - pip install -U pip
         - pip install -U setuptools
 
-          # Install nbconvert for testing the notebook
-        - pip install jupyter notebook nbconvert
+          # Install from requirements.txt
+        - pip install -r requirements.txt
 
       # This step takes the longest, and is what generates the Stack cache. 
       install:
@@ -82,7 +82,7 @@ matrix:
               # Images are rendered differently on different systems, so filter them out in the comparison
               diff <(grep -v image/png ~/ihaskell-out.ipynb) <(grep -v image/png notebooks/IHaskell.ipynb)
           fi
-    - env: DISPLAY=true   USE_STACK_YAML="stack-8.2.yaml"     # GHC 8.2.1
+    - env: DISPLAY=true   USE_STACK_YAML="stack.yaml"     # GHC 8.2.2
       language: python
       # Test against different stack LTS versions.
 
@@ -124,8 +124,8 @@ matrix:
         - pip install -U pip
         - pip install -U setuptools
 
-          # Install nbconvert for testing the notebook
-        - pip install jupyter notebook nbconvert
+          # Install from requirements.txt
+        - pip install -r requirements.txt
 
       # This step takes the longest, and is what generates the Stack cache. 
       install:
